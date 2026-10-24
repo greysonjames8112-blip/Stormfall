@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Stormfall</title>
+<style>
+  :root { --ink:#0d1622; --panel:#16233a; --line:#2c4263; --text:#e8eef7; --muted:#8fa3bf; --accent:#ffb347; }
+  html, body { margin:0; height:100%; overflow:hidden; background:var(--ink); color:var(--text);
+    font-family:"Trebuchet MS","Segoe UI",system-ui,sans-serif; }
+  canvas { display:block; }
+  .overlay { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; }
+
+  /* ---- Main menu ---- */
+  #menu { background:
+      radial-gradient(1200px 600px at 20% 110%, #36546e 0%, transparent 60%),
+      radial-gradient(900px 500px at 90% -10%, #5b3b52 0%, transparent 55%), var(--ink); z-index:20; }
+  .card { width:min(380px, 90vw); background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:28px 26px 22px; }
+  .card h1 { margin:0 0 4px; font-size:38px; letter-spacing:.04em; font-weight:800; }
+  .card p.sub { margin:0 0 20px; color:var(--muted); font-size:14px; }
+  .card label { display:block; font-size:13px; color:var(--muted); margin:12px 0 5px; }
+  .card input { width:100%; box-sizing:border-box; padding:11px 12px; font-size:16px; color:var(--text); background:#0f1a2b;
+    border:1px solid var(--line); border-radius:8px; outline:none; }
+  .card input:focus { border-color:var(--accent); }
+  .card button { width:100%; margin-top:20px; padding:13px; font-size:18px; font-weight:700; color:#2a1700; background:var(--accent);
+    border:0; border-radius:8px; cursor:pointer; }
+  .card button:disabled { opacity:.6; cursor:default; }
+  #msg { min-height:20px; margin-top:12px; font-size:14px; color:#ff8a80; }
+  .keys { margin-top:10px; font-size:12.5px; color:var(--muted); line-height:1.6; }
+
+  /* ---- In-game HUD (Stage 1: crosshair + debug + notices) ---- */
+  #hud { position:fixed; inset:0; pointer-events:none; display:none; z-index:5; }
+  #cross { position:absolute; left:50%; top:50%; width:6px; height:6px; margin:-3px 0 0 -3px; border-radius:50%;
+    background:rgba(255,255,255,.9); box-shadow:0 0 0 1.5px rgba(0,0,0,.55); }
+  #debug { position:absolute; right:10px; top:8px; font:12px/1.5 monospace; color:#fff; text-shadow:0 1px 2px #000; text-align:right; }
+  #feed { position:absolute; left:10px; top:8px; font-size:14px; text-shadow:0 1px 3px #000; }
+  #feed div { margin-bottom:4px; }
+  #lock { position:fixed; inset:0; display:none; align-items:center; justify-content:center; z-index:10;
+    background:rgba(8,14,24,.55); font-size:22px; font-weight:700; cursor:pointer; text-align:center; }
+  #touch { position:fixed; inset:0; display:none; z-index:6; touch-action:none; -webkit-user-select:none; user-select:none; }
+  #joyBase { position:absolute; width:120px; height:120px; margin:-60px 0 0 -60px; border-radius:50%; border:2px solid rgba(255,255,255,.35);
+    background:rgba(255,255,255,.08); display:none; }
+  #joyKnob { position:absolute; left:50%; top:50%; width:52px; height:52px; margin:-26px 0 0 -26px; border-radius:50%; background:rgba(255,255,255,.4); }
+  .tbtn { position:absolute; width:64px; height:64px; border-radius:50%; border:2px solid rgba(255,255,255,.45); background:rgba(20,30,48,.45);
+    color:#fff; font-size:13px; font-weight:700; display:flex; align-items:center; justify-content:center; }
+  .tbtn.on { background:rgba(255,179,71,.7); color:#2a1700; }
+  #bJump { right:max(24px, env(safe-area-inset-right)); bottom:28px; width:78px; height:78px; }
+  #bCrouch { right:120px; bottom:24px; }
+  body.touch .keys { display:none; }
+  #lock small { display:block; margin-top:8px; font-size:14px; font-weight:400; color:var(--muted); }
+</style>
+</head>
+<body>
+
+<div id="menu" class="overlay">
+  <div class="card">
+    <h1>Stormfall</h1>
+    <p class="sub">Drop in, loot up, outlast everyone.</p>
+    <label for="name">Username</label>
+    <input id="name" maxlength="16" placeholder="Your name" autocomplete="off">
+    <label for="server">Server address</label>
+    <input id="server" placeholder="localhost:3000" autocomplete="off" autocapitalize="off" spellcheck="false">
+    <button id="play">Play</button>
+    <div id="msg"></div>
+    <div class="keys">WASD move · Shift sprint · C crouch · Space jump · Mouse look · Esc release mouse</div>
+  </div>
+</div>
+
+<div id="hud">
+  <div id="cross"></div>
+  <div id="debug"></div>
+  <div id="feed"></div>
+</div>
+<div id="touch">
+  <div id="joyBase"><div id="joyKnob"></div></div>
+  <div class="tbtn" id="bCrouch">Crouch</div>
+  <div class="tbtn" id="bJump">Jump</div>
+</div>
+<div id="lock"><div>Click to play<small>Esc releases the mouse</small></div></div>
+
+<!-- Three.js pinned to an exact version on the cdnjs CDN -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+"use strict";
+// ===================== SHARED CODE (identical to server.js) =====================
+const WORLD_HALF = 150;               // map is a square from -150 to +150
+const TICK_DT = 1 / 60;               // fixed physics step (one command = one step)
+const EPS = 0.001;
+const MOVE = {
+  walk: 5, sprint: 8.5, crouch: 2.5,  // metres / second
+  jump: 7.5, gravity: 22,
+  radius: 0.4, stand: 1.8, crouchH: 1.2,
+  eyeStand: 1.62, eyeCrouch: 1.1
+};
+
+// Small deterministic PRNG: same seed -> same map on server and clients.
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Builds the whole map as axis-aligned boxes. Only the seed is sent over the network.
+//  boxes    = solid colliders (most are also drawn; "hidden" ones are drawn differently)
+//  deco     = visual-only boxes (floors)
+//  trees / rocks = extra info the client uses to draw nicer shapes
+//  loot     = spots inside buildings where items will spawn (used in a later stage)
+function generateMap(seed) {
+  const rnd = mulberry32(seed);
+  const R = (a, b) => a + rnd() * (b - a);
+  const boxes = [], deco = [], trees = [], rocks = [], buildings = [], loot = [];
+  const addBox = (cx, cy, cz, sx, sy, sz, col, hidden) => boxes.push({
+    x0: cx - sx / 2, y0: cy - sy / 2, z0: cz - sz / 2,
+    x1: cx + sx / 2, y1: cy + sy / 2, z1: cz + sz / 2, col: col, hidden: !!hidden
+  });
+  const T = 0.4, H = 3.4, DOOR_W = 2.4, DOOR_H = 2.6;
+
+  // One wall of a building. isX=true -> runs along X at z=fixed. door = offset of door centre or null.
+  const wall = (isX, fixed, c, len, door, col) => {
+    const seg = (a0, a1, y0, y1) => {
+      if (a1 - a0 < 0.01) return;
+      const mid = (a0 + a1) / 2, l = a1 - a0, hy = (y0 + y1) / 2, sy = y1 - y0;
+      if (isX) addBox(mid, hy, fixed, l, sy, T, col); else addBox(fixed, hy, mid, T, sy, l, col);
+    };
+    const a0 = c - len / 2, a1 = c + len / 2;
+    if (door === null) seg(a0, a1, 0, H);
+    else {
+      const g0 = c + door - DOOR_W / 2, g1 = c + door + DOOR_W / 2;
+      seg(a0, g0, 0, H);            // wall left of door
+      seg(g1, a1, 0, H);            // wall right of door
+      seg(g0, g1, DOOR_H, H);       // lintel above door
+    }
+  };
+
+  // ---- Buildings on a jittered grid (each has a door, roof, cover crates, loot spots)
+  for (let gx = -3; gx <= 3; gx++) for (let gz = -3; gz <= 3; gz++) {
+    if (rnd() < 0.5) continue;
+    const w = R(10, 17), d = R(10, 16);
+    const cx = gx * 40 + R(-8, 8), cz = gz * 40 + R(-8, 8);
+    const col = Math.floor(rnd() * 3);
+    const doorSide = Math.floor(rnd() * 4);               // 0=N(-z) 1=S(+z) 2=E(+x) 3=W(-x)
+    const mx = w / 2 - DOOR_W / 2 - 1, mz = d / 2 - DOOR_W / 2 - 1;
+    const oN = R(-mx, mx), oS = R(-mx, mx), oE = R(-mz, mz), oW = R(-mz, mz);
+    wall(true, cz - d / 2, cx, w, doorSide === 0 ? oN : null, col);
+    wall(true, cz + d / 2, cx, w, doorSide === 1 ? oS : null, col);
+    wall(false, cx + w / 2, cz, d, doorSide === 2 ? oE : null, col);
+    wall(false, cx - w / 2, cz, d, doorSide === 3 ? oW : null, col);
+    addBox(cx, H + 0.15, cz, w + 0.6, 0.3, d + 0.6, 3);   // roof slab
+    deco.push({ cx: cx, cy: 0.03, cz: cz, sx: w, sy: 0.06, sz: d, col: 6 });  // floor (visual)
+    // two crates in the corners on the side opposite the door
+    const c1 = R(0.9, 1.3), c2 = R(0.9, 1.3);
+    if (doorSide < 2) {
+      const sz = doorSide === 0 ? 1 : -1;
+      addBox(cx - (w / 2 - 1.6), c1 / 2, cz + sz * (d / 2 - 1.6), c1, c1, c1, 4);
+      addBox(cx + (w / 2 - 1.6), c2 / 2, cz + sz * (d / 2 - 1.6), c2, c2, c2, 4);
+    } else {
+      const sx = doorSide === 2 ? -1 : 1;
+      addBox(cx + sx * (w / 2 - 1.6), c1 / 2, cz - (d / 2 - 1.6), c1, c1, c1, 4);
+      addBox(cx + sx * (w / 2 - 1.6), c2 / 2, cz + (d / 2 - 1.6), c2, c2, c2, 4);
+    }
+    for (let i = 0; i < 3; i++)
+      loot.push({ x: cx + R(-(w / 2 - 2.8), w / 2 - 2.8), z: cz + R(-(d / 2 - 2.8), d / 2 - 2.8) });
+    buildings.push({ cx: cx, cz: cz, w: w, d: d, h: H, doorSide: doorSide });
+  }
+  const nearBuilding = (x, z, m) =>
+    buildings.some(b => Math.abs(x - b.cx) < b.w / 2 + m && Math.abs(z - b.cz) < b.d / 2 + m);
+
+  // ---- Outdoor cover: crates and low concrete walls
+  for (let i = 0; i < 70; i++) {
+    const x = R(-140, 140), z = R(-140, 140), kind = rnd(), s = R(1, 1.6), L = R(3, 6), alongX = rnd() < 0.5;
+    if (nearBuilding(x, z, 3)) continue;
+    if (kind < 0.5) addBox(x, s / 2, z, s, s, s, 4);
+    else addBox(x, 0.6, z, alongX ? L : 0.5, 1.2, alongX ? 0.5 : L, 7);
+  }
+  // ---- Trees (square trunk collider; foliage is visual only)
+  for (let i = 0; i < 170; i++) {
+    const x = R(-146, 146), z = R(-146, 146), s = R(0.8, 1.5);
+    if (nearBuilding(x, z, 4)) continue;
+    addBox(x, 2.5 * s, z, 0.6 * s, 5 * s, 0.6 * s, 5);
+    trees.push({ x: x, z: z, s: s });
+  }
+  // ---- Rocks (box collider hidden; client draws a low-poly boulder)
+  for (let i = 0; i < 40; i++) {
+    const x = R(-145, 145), z = R(-145, 145), r = R(1, 2.6), rot = R(0, 6.28);
+    if (nearBuilding(x, z, 3)) continue;
+    addBox(x, 0.6 * r, z, 1.5 * r, 1.2 * r, 1.5 * r, 7, true);
+    rocks.push({ x: x, z: z, r: r, rot: rot });
+  }
+  return { seed: seed, boxes: boxes, deco: deco, trees: trees, rocks: rocks, buildings: buildings, loot: loot };
+}
+
+function boxOverlap(b, x, y, z, h, r) {
+  return x + r > b.x0 && x - r < b.x1 && z + r > b.z0 && z - r < b.z1 && y + h > b.y0 && y < b.y1;
+}
+function overlaps(map, x, y, z, h) {
+  for (let i = 0; i < map.boxes.length; i++) if (boxOverlap(map.boxes[i], x, y, z, h, MOVE.radius)) return true;
+  return false;
+}
+
+// One fixed physics step. s = {x,y,z,vx,vy,vz,og,crouch}; cmd = {f,r,k,y,p}
+//   f/r = forward/right (-1..1), k = bit flags (1 jump, 2 sprint, 4 crouch), y = yaw
+function stepPlayer(map, s, cmd) {
+  const dt = TICK_DT, rad = MOVE.radius, boxes = map.boxes;
+  // Crouch: can only stand up if there is headroom.
+  if (cmd.k & 4) s.crouch = true;
+  else if (s.crouch && !overlaps(map, s.x, s.y, s.z, MOVE.stand)) s.crouch = false;
+  const h = s.crouch ? MOVE.crouchH : MOVE.stand;
+
+  // Wish direction from input (clamped, so a cheater can't send f=100)
+  let f = Math.max(-1, Math.min(1, cmd.f)), rt = Math.max(-1, Math.min(1, cmd.r));
+  const len = Math.hypot(f, rt);
+  if (len > 1) { f /= len; rt /= len; }
+  const sy = Math.sin(cmd.y), cy = Math.cos(cmd.y);
+  const wx = -sy * f + cy * rt, wz = -cy * f - sy * rt;
+  const speed = s.crouch ? MOVE.crouch : ((cmd.k & 2) && f > 0.1 ? MOVE.sprint : MOVE.walk);
+
+  // Accelerate toward the wish velocity (snappy on ground, floaty in the air)
+  const a = Math.min(1, (s.og ? 14 : 2.5) * dt);
+  s.vx += (wx * speed - s.vx) * a;
+  s.vz += (wz * speed - s.vz) * a;
+  if ((cmd.k & 1) && s.og && !s.crouch) { s.vy = MOVE.jump; s.og = false; }
+  s.vy -= MOVE.gravity * dt;
+
+  // Move one axis at a time and push out of any box we overlap (simple, robust).
+  s.x += s.vx * dt;
+  for (let i = 0; i < boxes.length; i++) {
+    const b = boxes[i];
+    if (boxOverlap(b, s.x, s.y, s.z, h, rad)) {
+      if (s.vx > 0) s.x = b.x0 - rad - EPS; else if (s.vx < 0) s.x = b.x1 + rad + EPS;
+      s.vx = 0;
+    }
+  }
+  s.z += s.vz * dt;
+  for (let i = 0; i < boxes.length; i++) {
+    const b = boxes[i];
+    if (boxOverlap(b, s.x, s.y, s.z, h, rad)) {
+      if (s.vz > 0) s.z = b.z0 - rad - EPS; else if (s.vz < 0) s.z = b.z1 + rad + EPS;
+      s.vz = 0;
+    }
+  }
+  s.y += s.vy * dt;
+  s.og = false;
+  if (s.y <= 0) { s.y = 0; s.vy = 0; s.og = true; }        // flat ground at y=0
+  for (let i = 0; i < boxes.length; i++) {
+    const b = boxes[i];
+    if (boxOverlap(b, s.x, s.y, s.z, h, rad)) {
+      if (s.vy <= 0) { s.y = b.y1; s.vy = 0; s.og = true; }   // land on top of a box
+      else { s.y = b.y0 - h - EPS; s.vy = 0; }                // bonk head
+    }
+  }
+  // Keep inside the world
+  const lim = WORLD_HALF - rad;
+  s.x = Math.max(-lim, Math.min(lim, s.x));
+  s.z = Math.max(-lim, Math.min(lim, s.z));
+}
+
+
+// =====================================================================
+// CLIENT  (STAGE 1: 3D scene, movement with prediction, other players)
+// =====================================================================
+const $ = id => document.getElementById(id);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const SENS = 0.0022;                  // mouse sensitivity (radians per pixel)
+const IS_TOUCH = ("ontouchstart" in window) || (navigator.maxTouchPoints > 0 && matchMedia("(pointer:coarse)").matches);
+if (IS_TOUCH) document.body.classList.add("touch");
+const TSENS = 0.005;                  // touch look sensitivity (radians per pixel)
+let touchOn = false;                  // true once the player tapped "Tap to play" on a phone
+const INTERP_DELAY = 100;             // ms: we draw other players 100 ms in the past so there are always 2 snapshots to blend
+
+// ---------------- Network / game state ----------------
+let ws = null, myId = 0, map = null, playing = false, locked = false;
+const remotes = new Map();            // id -> { name, group, parts..., buf:[snapshots] }
+const me = { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, og: true, crouch: false };   // predicted local state
+let yaw = 0, pitch = 0;
+let seq = 0;                          // sequence number of the last command we generated
+let pending = [];                     // commands the server hasn't acknowledged yet (for reconciliation)
+let outQ = [];                        // commands waiting to be sent
+let serverOffset = null;              // serverTime - localTime, smoothed
+let ping = 0;
+
+// ---------------- Three.js scene ----------------
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+renderer.setPixelRatio(IS_TOUCH ? 1.25 : Math.min(window.devicePixelRatio || 1, 2));   // phones render fewer pixels
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFShadowMap;
+document.body.insertBefore(renderer.domElement, document.body.firstChild);
+const canvas = renderer.domElement;
+
+const scene = new THREE.Scene();
+const FOG_COLOR = 0xbcd9ee;
+scene.fog = new THREE.Fog(FOG_COLOR, 80, 330);
+scene.background = new THREE.Color(FOG_COLOR);
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.08, 700);
+camera.rotation.order = "YXZ";        // yaw first, then pitch = classic FPS camera
+scene.add(camera);
+
+// Lighting: soft sky/ground light + one shadow-casting sun that follows the player
+scene.add(new THREE.HemisphereLight(0xcfe8ff, 0x5a7a4a, 0.75));
+const sun = new THREE.DirectionalLight(0xfff0d6, 0.85);
+const SUN_OFFSET = new THREE.Vector3(45, 75, 28);
+sun.castShadow = true;
+sun.shadow.mapSize.set(IS_TOUCH ? 1024 : 2048, IS_TOUCH ? 1024 : 2048);
+const sc = sun.shadow.camera;
+sc.left = -55; sc.right = 55; sc.top = 55; sc.bottom = -55; sc.near = 1; sc.far = 220;
+sun.shadow.bias = -0.0006;
+scene.add(sun); scene.add(sun.target);
+
+// Gradient sky dome that stays centred on the camera
+const sky = new THREE.Mesh(
+  new THREE.SphereGeometry(500, 24, 12),
+  new THREE.ShaderMaterial({
+    side: THREE.BackSide, depthWrite: false, fog: false,
+    uniforms: { top: { value: new THREE.Color(0x2f6fc0) }, bottom: { value: new THREE.Color(FOG_COLOR) } },
+    vertexShader: "varying vec3 vP; void main(){ vP = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }",
+    fragmentShader: "uniform vec3 top; uniform vec3 bottom; varying vec3 vP; void main(){ float h = normalize(vP).y; gl_FragColor = vec4(mix(bottom, top, pow(max(h,0.0), 0.55)), 1.0); }"
+  })
+);
+sky.frustumCulled = false; sky.renderOrder = -10;
+scene.add(sky);
+const sunDisc = new THREE.Mesh(new THREE.SphereGeometry(18, 16, 12), new THREE.MeshBasicMaterial({ color: 0xfff6d8, fog: false }));
+sunDisc.frustumCulled = false; scene.add(sunDisc);
+
+// Ground
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(1400, 1400), new THREE.MeshLambertMaterial({ color: 0x6b9a4a }));
+ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true;
+scene.add(ground);
+
+// ---------------- Building the map from the seed ----------------
+const PALETTE = [0xd9c9a3, 0x9fb4c4, 0xc98f6b, 0x5b4a45, 0x9a7048, 0x5e4129, 0x8a8a84, 0xa6a6a0];
+let worldGroup = null;
+
+function buildWorld(m) {
+  if (worldGroup) { scene.remove(worldGroup); worldGroup.traverse(o => { if (o.geometry) o.geometry.dispose(); }); }
+  worldGroup = new THREE.Group();
+  const unit = new THREE.BoxGeometry(1, 1, 1);
+  const q = new THREE.Quaternion(), mat4 = new THREE.Matrix4(), pos = new THREE.Vector3(), scl = new THREE.Vector3();
+
+  // Every box of the same colour is drawn as ONE instanced mesh (1 draw call per colour).
+  const byCol = {};
+  const add = (col, cx, cy, cz, sx, sy, sz) => (byCol[col] = byCol[col] || []).push([cx, cy, cz, sx, sy, sz]);
+  for (const b of m.boxes) if (!b.hidden) add(b.col, (b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, (b.z0 + b.z1) / 2, b.x1 - b.x0, b.y1 - b.y0, b.z1 - b.z0);
+  for (const d of m.deco) add(d.col, d.cx, d.cy, d.cz, d.sx, d.sy, d.sz);
+  // Cliff walls marking the edge of the playable area (visual only; players are clamped inside)
+  const E = WORLD_HALF + 1.5;
+  add(6, 0, 6, -E, E * 2 + 6, 12, 3); add(6, 0, 6, E, E * 2 + 6, 12, 3);
+  add(6, -E, 6, 0, 3, 12, E * 2 + 6); add(6, E, 6, 0, 3, 12, E * 2 + 6);
+
+  function instanced(geo, material, list, shadow) {
+    const im = new THREE.InstancedMesh(geo, material, list.length);
+    list.forEach((v, i) => { mat4.compose(v.p, v.q, v.s); im.setMatrixAt(i, mat4); });
+    im.castShadow = shadow; im.receiveShadow = true;
+    im.frustumCulled = false;       // instanced meshes would otherwise be culled by the origin only
+    worldGroup.add(im);
+    return im;
+  }
+  for (const col in byCol) {
+    const list = byCol[col].map(v => ({ p: new THREE.Vector3(v[0], v[1], v[2]), q: q, s: new THREE.Vector3(v[3], v[4], v[5]) }));
+    instanced(unit, new THREE.MeshLambertMaterial({ color: PALETTE[col] }), list, true);
+  }
+
+  // Trees: two stacked cones on top of the (box) trunk
+  const cone = new THREE.ConeGeometry(2.1, 3.6, 7);
+  const t1 = [], t2 = [];
+  for (const t of m.trees) {
+    t1.push({ p: new THREE.Vector3(t.x, 4.2 * t.s, t.z), q: q, s: new THREE.Vector3(t.s, t.s, t.s) });
+    t2.push({ p: new THREE.Vector3(t.x, 6.2 * t.s, t.z), q: q, s: new THREE.Vector3(0.7 * t.s, 0.7 * t.s, 0.7 * t.s) });
+  }
+  instanced(cone, new THREE.MeshLambertMaterial({ color: 0x3f7d3a, flatShading: true }), t1, true);
+  instanced(cone, new THREE.MeshLambertMaterial({ color: 0x4d9444, flatShading: true }), t2, true);
+
+  // Rocks: squashed dodecahedra with random spin
+  const rl = m.rocks.map(r => ({
+    p: new THREE.Vector3(r.x, 0.5 * r.r, r.z),
+    q: new THREE.Quaternion().setFromEuler(new THREE.Euler(0, r.rot, 0)),
+    s: new THREE.Vector3(r.r, 0.8 * r.r, r.r)
+  }));
+  instanced(new THREE.DodecahedronGeometry(1, 0), new THREE.MeshLambertMaterial({ color: 0x8d9296, flatShading: true }), rl, true);
+
+  // Distant mountain ring for a nicer horizon (no shadows, no collisions)
+  const mg = new THREE.ConeGeometry(1, 1, 6);
+  const ml = [];
+  for (let i = 0; i < 30; i++) {
+    const a = (i / 30) * Math.PI * 2, rad = 250 + (i % 3) * 18, h = 45 + ((i * 37) % 40), w = 55 + ((i * 53) % 30);
+    ml.push({ p: new THREE.Vector3(Math.cos(a) * rad, h / 2 - 2, Math.sin(a) * rad), q: q, s: new THREE.Vector3(w, h, w) });
+  }
+  instanced(mg, new THREE.MeshLambertMaterial({ color: 0x6f8f7a, flatShading: true }), ml, false);
+  scene.add(worldGroup);
+}
+
+// ---------------- Player models (primitives only) ----------------
+function makeNameSprite(text) {
+  const c = document.createElement("canvas"); c.width = 256; c.height = 64;
+  const g = c.getContext("2d");
+  g.font = "bold 30px sans-serif"; g.textAlign = "center"; g.textBaseline = "middle";
+  const w = g.measureText(text).width + 26;
+  g.fillStyle = "rgba(0,0,0,0.45)"; g.fillRect(128 - w / 2, 10, w, 44);
+  g.fillStyle = "#fff"; g.fillText(text, 128, 33);
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), transparent: true }));
+  sp.scale.set(2, 0.5, 1); sp.position.y = 2.2;
+  return sp;
+}
+
+function makeModel(id, name) {
+  const g = new THREE.Group();
+  const color = new THREE.Color().setHSL(((id * 47) % 360) / 360, 0.55, 0.5);
+  const cloth = new THREE.MeshLambertMaterial({ color: color });
+  const skin = new THREE.MeshLambertMaterial({ color: 0xf0c8a0 });
+  const dark = new THREE.MeshLambertMaterial({ color: 0x2c3340 });
+  const metal = new THREE.MeshLambertMaterial({ color: 0x22252b });
+  const box = (sx, sy, sz, mat, x, y, z, parent) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), mat);
+    m.position.set(x, y, z); m.castShadow = true; (parent || g).add(m); return m;
+  };
+  const pivot = (x, y, z) => { const p = new THREE.Group(); p.position.set(x, y, z); g.add(p); return p; };
+
+  box(0.6, 0.7, 0.34, cloth, 0, 1.05, 0);                      // torso
+  const head = box(0.34, 0.34, 0.34, skin, 0, 1.6, 0);          // head
+  box(0.36, 0.1, 0.36, dark, 0, 1.76, 0);                       // cap
+  const legL = pivot(-0.15, 0.7, 0), legR = pivot(0.15, 0.7, 0);// legs swing from the hips
+  box(0.24, 0.7, 0.26, dark, 0, -0.35, 0, legL); box(0.24, 0.7, 0.26, dark, 0, -0.35, 0, legR);
+  const armL = pivot(-0.4, 1.35, 0), armR = pivot(0.4, 1.35, 0);// arms swing from the shoulders
+  box(0.2, 0.65, 0.2, cloth, 0, -0.3, 0, armL); box(0.2, 0.65, 0.2, cloth, 0, -0.3, 0, armR);
+  box(0.09, 0.55, 0.14, metal, 0, -0.62, 0.05, armR);           // held weapon (placeholder block until stage 2)
+  g.add(makeNameSprite(name));
+  return { group: g, legL: legL, legR: legR, armL: armL, armR: armR, head: head, phase: 0, speed: 0 };
+}
+
+function addRemote(id, name) {
+  if (remotes.has(id) || id === myId) return;
+  const mdl = makeModel(id, name);
+  mdl.group.visible = false;          // hidden until the first snapshot arrives
+  scene.add(mdl.group);
+  remotes.set(id, Object.assign(mdl, { id: id, name: name, buf: [], px: 0, pz: 0, have: false }));
+}
+function removeRemote(id) {
+  const r = remotes.get(id); if (!r) return;
+  scene.remove(r.group);
+  r.group.traverse(o => {
+    if (o.geometry) o.geometry.dispose();
+    if (o.material) { if (o.material.map) o.material.map.dispose(); o.material.dispose(); }
+  });
+  remotes.delete(id);
+}
+function clearRemotes() { for (const id of [...remotes.keys()]) removeRemote(id); }
+
+// ---------------- Input ----------------
+const keys = {};
+addEventListener("keydown", e => {
+  if (!locked) return;
+  keys[e.code] = true;
+  if (e.code === "Space" || e.code.startsWith("Arrow")) e.preventDefault();
+});
+addEventListener("keyup", e => { keys[e.code] = false; });
+addEventListener("blur", () => { for (const k in keys) keys[k] = false; });
+document.addEventListener("mousemove", e => {
+  if (!locked) return;
+  yaw -= e.movementX * SENS;
+  pitch = clamp(pitch - e.movementY * SENS, -1.5, 1.5);
+});
+document.addEventListener("pointerlockchange", () => {
+  locked = document.pointerLockElement === canvas;
+  if (!IS_TOUCH) $("lock").style.display = (playing && !locked) ? "flex" : "none";
+  if (!locked) for (const k in keys) keys[k] = false;
+});
+$("lock").addEventListener("click", () => {
+  if (IS_TOUCH) {                                      // phones: no pointer lock, show touch controls instead
+    touchOn = true; $("lock").style.display = "none"; $("touch").style.display = "block";
+    const el = document.documentElement;
+    try { if (el.requestFullscreen) el.requestFullscreen().catch(() => {}); } catch (e) { }
+    try { if (screen.orientation && screen.orientation.lock) screen.orientation.lock("landscape").catch(() => {}); } catch (e) { }
+  } else canvas.requestPointerLock();
+});
+
+// ---------------- Touch controls: floating joystick (left), look drag (right), buttons ----------------
+const touch = { f: 0, r: 0, jump: false, crouch: false, joyId: null, lookId: null, jx: 0, jy: 0, lx: 0, ly: 0 };
+const JOY_R = 55;
+const joyBase = $("joyBase"), joyKnob = $("joyKnob");
+$("touch").addEventListener("touchstart", e => {
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    if (t.clientX < window.innerWidth * 0.45 && touch.joyId === null) {
+      touch.joyId = t.identifier; touch.jx = t.clientX; touch.jy = t.clientY;
+      joyBase.style.display = "block"; joyBase.style.left = t.clientX + "px"; joyBase.style.top = t.clientY + "px";
+      joyKnob.style.transform = "translate(0,0)";
+    } else if (t.clientX >= window.innerWidth * 0.45 && touch.lookId === null) {
+      touch.lookId = t.identifier; touch.lx = t.clientX; touch.ly = t.clientY;
+    }
+  }
+}, { passive: false });
+$("touch").addEventListener("touchmove", e => {
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    if (t.identifier === touch.joyId) {
+      let dx = t.clientX - touch.jx, dy = t.clientY - touch.jy;
+      const m = Math.hypot(dx, dy);
+      if (m > JOY_R) { dx = dx / m * JOY_R; dy = dy / m * JOY_R; }
+      touch.r = dx / JOY_R; touch.f = -dy / JOY_R;
+      joyKnob.style.transform = "translate(" + dx + "px," + dy + "px)";
+    } else if (t.identifier === touch.lookId) {
+      yaw -= (t.clientX - touch.lx) * TSENS;
+      pitch = clamp(pitch - (t.clientY - touch.ly) * TSENS, -1.5, 1.5);
+      touch.lx = t.clientX; touch.ly = t.clientY;
+    }
+  }
+}, { passive: false });
+function touchEnd(e) {
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    if (t.identifier === touch.joyId) { touch.joyId = null; touch.f = touch.r = 0; joyBase.style.display = "none"; }
+    if (t.identifier === touch.lookId) touch.lookId = null;
+  }
+}
+$("touch").addEventListener("touchend", touchEnd, { passive: false });
+$("touch").addEventListener("touchcancel", touchEnd, { passive: false });
+// Buttons stop propagation so pressing them doesn't start a look-drag
+const bJump = $("bJump"), bCrouch = $("bCrouch");
+bJump.addEventListener("touchstart", e => { e.preventDefault(); e.stopPropagation(); touch.jump = true; bJump.classList.add("on"); }, { passive: false });
+bJump.addEventListener("touchend", e => { e.preventDefault(); e.stopPropagation(); touch.jump = false; bJump.classList.remove("on"); }, { passive: false });
+bCrouch.addEventListener("touchstart", e => { e.preventDefault(); e.stopPropagation(); touch.crouch = !touch.crouch; bCrouch.classList.toggle("on", touch.crouch); }, { passive: false });
+
+// Turn the current keyboard state into one command (f = forward, r = right, k = flag bits)
+function readInput() {
+  if (IS_TOUCH) {
+    if (!touchOn) return { f: 0, r: 0, k: 0 };
+    const dz = v => (Math.abs(v) < 0.15 ? 0 : v);      // dead zone
+    const f = dz(touch.f), r = dz(touch.r);
+    const sprint = Math.hypot(touch.f, touch.r) > 0.95 && touch.f > 0.5;   // push the stick all the way = sprint
+    return { f: f, r: r, k: (touch.jump ? 1 : 0) | (sprint ? 2 : 0) | (touch.crouch ? 4 : 0) };
+  }
+  if (!locked) return { f: 0, r: 0, k: 0 };
+  const f = (keys.KeyW || keys.ArrowUp ? 1 : 0) - (keys.KeyS || keys.ArrowDown ? 1 : 0);
+  const r = (keys.KeyD || keys.ArrowRight ? 1 : 0) - (keys.KeyA || keys.ArrowLeft ? 1 : 0);
+  const k = (keys.Space ? 1 : 0) | ((keys.ShiftLeft || keys.ShiftRight) ? 2 : 0) | (keys.KeyC ? 4 : 0);
+  return { f: f, r: r, k: k };
+}
+
+// ---------------- Networking ----------------
+function defaultAddress() {
+  return location.protocol === "file:" ? "localhost:3000" : location.host;
+}
+function normalizeAddress(a) {
+  a = (a || "").trim() || defaultAddress();
+  if (!/^wss?:\/\//i.test(a)) a = (location.protocol === "https:" ? "wss://" : "ws://") + a;
+  return a;
+}
+function showMenu(text) {
+  $("menu").style.display = "flex"; $("hud").style.display = "none"; $("lock").style.display = "none";
+  $("msg").textContent = text || ""; $("play").disabled = false;
+  touchOn = false; $("touch").style.display = "none";
+  if (document.pointerLockElement) document.exitPointerLock();
+}
+function feed(text) {
+  const d = document.createElement("div"); d.textContent = text; $("feed").appendChild(d);
+  setTimeout(() => d.remove(), 5000);
+}
+
+function connect() {
+  const name = $("name").value.trim() || "Player";
+  const url = normalizeAddress($("server").value);
+  try { localStorage.setItem("sf_name", name); localStorage.setItem("sf_server", $("server").value); } catch (e) { }
+  $("msg").textContent = "Connecting…"; $("play").disabled = true;
+  try { ws = new WebSocket(url); } catch (e) { showMenu("That server address isn't valid."); return; }
+  const mySocket = ws;
+  mySocket.onopen = () => mySocket.send(JSON.stringify({ t: "join", name: name }));
+  mySocket.onmessage = ev => { let m; try { m = JSON.parse(ev.data); } catch (e) { return; } onMessage(m); };
+  mySocket.onerror = () => { if (!playing) showMenu("Could not reach " + url + ". Is the server running?"); };
+  mySocket.onclose = () => {
+    if (mySocket !== ws) return;
+    const wasPlaying = playing;
+    playing = false; clearRemotes();
+    showMenu(wasPlaying ? "Disconnected from the server." : ($("msg").textContent || "Connection closed."));
+  };
+}
+
+function onMessage(m) {
+  switch (m.t) {
+    case "welcome": {
+      myId = m.id;
+      map = generateMap(m.seed);                       // same seed -> identical map as the server
+      buildWorld(map);
+      const s = m.me; Object.assign(me, { x: s[0], y: s[1], z: s[2], vx: s[3], vy: s[4], vz: s[5], og: !!s[6], crouch: !!s[7] });
+      yaw = m.yaw; pitch = 0; seq = 0; pending = []; outQ = []; serverOffset = null;
+      clearRemotes();
+      for (const p of m.players) addRemote(p.id, p.name);
+      playing = true;
+      $("menu").style.display = "none"; $("hud").style.display = "block"; $("lock").style.display = "flex";
+      touchOn = false; $("touch").style.display = "none";
+      $("lock").firstElementChild.firstChild.textContent = IS_TOUCH ? "Tap to play" : "Click to play";
+      $("lock").querySelector("small").textContent = IS_TOUCH ? "Left thumb moves (push fully to sprint) · right thumb looks" : "Esc releases the mouse";
+      $("feed").innerHTML = ""; feed("Connected. " + (m.players.length + 1) + " player(s) online.");
+      break;
+    }
+    case "join": addRemote(m.id, m.name); feed(m.name + " joined"); break;
+    case "leave": {                                     // graceful disconnect handling
+      const r = remotes.get(m.id);
+      if (r) { feed(r.name + " left"); removeRemote(m.id); }
+      break;
+    }
+    case "full": $("msg").textContent = "Server is full (16 players)."; break;
+    case "pong": ping = performance.now() - m.c; break;
+    case "s": onSnapshot(m); break;
+  }
+}
+
+function onSnapshot(m) {
+  // Clock sync: how far the server clock is ahead of ours (smoothed)
+  const off = m.n - performance.now();
+  serverOffset = serverOffset === null ? off : serverOffset + (off - serverOffset) * 0.05;
+
+  // 1) Other players: store snapshots; they are drawn interpolated in updateRemotes()
+  for (const e of m.p) {
+    let r = remotes.get(e[0]);
+    if (!r) { addRemote(e[0], "Player"); r = remotes.get(e[0]); }
+    r.buf.push({ t: m.n, x: e[1], y: e[2], z: e[3], yaw: e[4], pitch: e[5], fl: e[6] });
+    if (r.buf.length > 30) r.buf.shift();
+  }
+
+  // 2) Reconciliation for ourselves: adopt the server's state for the last input it
+  //    processed (m.a), then re-apply every input it hasn't seen yet.
+  const s = m.me;
+  Object.assign(me, { x: s[0], y: s[1], z: s[2], vx: s[3], vy: s[4], vz: s[5], og: !!s[6], crouch: !!s[7] });
+  pending = pending.filter(c => c.seq > m.a);
+  for (const c of pending) stepPlayer(map, me, c);
+}
+
+// ---------------- Per-frame updates ----------------
+let acc = 0, lastSend = 0, lastPing = 0, eyeH = MOVE.eyeStand, fovCur = 75;
+
+// One fixed 1/60 s step: read input -> predict locally -> queue for the server
+function clientTick() {
+  const inp = readInput();
+  const cmd = { seq: ++seq, f: inp.f, r: inp.r, k: inp.k, y: yaw, p: pitch };
+  stepPlayer(map, me, cmd);                            // prediction (instant response)
+  pending.push(cmd);
+  outQ.push(cmd);
+  if (pending.length > 240) pending.shift();
+}
+function flushInput() {
+  if (!outQ.length || !ws || ws.readyState !== 1) { outQ.length = 0; return; }
+  ws.send(JSON.stringify({ t: "in", c: outQ.map(c => [c.seq, c.f, c.r, c.k, +c.y.toFixed(3), +c.p.toFixed(3)]) }));
+  outQ.length = 0;
+}
+
+function lerpAng(a, b, k) { let d = b - a; d = Math.atan2(Math.sin(d), Math.cos(d)); return a + d * k; }
+// Entity interpolation: find the two snapshots around renderTime and blend them.
+function sample(buf, rt) {
+  if (!buf.length) return null;
+  if (rt <= buf[0].t) return buf[0];
+  for (let i = buf.length - 1; i > 0; i--) {
+    if (buf[i - 1].t <= rt) {
+      const a = buf[i - 1], b = buf[i];
+      if (rt >= b.t) return b;                         // newer than our newest data: hold last position
+      const k = (rt - a.t) / (b.t - a.t);
+      return { x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k, z: a.z + (b.z - a.z) * k,
+               yaw: lerpAng(a.yaw, b.yaw, k), pitch: a.pitch + (b.pitch - a.pitch) * k, fl: b.fl };
+    }
+  }
+  return buf[buf.length - 1];
+}
+
+function updateRemotes(now, dt) {
+  if (serverOffset === null) return;
+  const rt = now + serverOffset - INTERP_DELAY;
+  for (const r of remotes.values()) {
+    const st = sample(r.buf, rt);
+    if (!st) continue;
+    r.group.visible = true;
+    r.group.position.set(st.x, st.y, st.z);
+    r.group.rotation.y = st.yaw;
+    // Walk animation is driven by how fast the interpolated position is changing
+    if (r.have && dt > 0) {
+      const inst = Math.hypot(st.x - r.px, st.z - r.pz) / dt;
+      r.speed += (inst - r.speed) * Math.min(1, dt * 10);
+    }
+    r.px = st.x; r.pz = st.z; r.have = true;
+    const crouch = !!(st.fl & 1), air = !(st.fl & 2);
+    r.phase += r.speed * dt * 1.7;
+    const amp = air ? 0.25 : Math.min(r.speed / 6, 1) * 0.9, sw = Math.sin(r.phase);
+    r.legL.rotation.x = sw * amp; r.legR.rotation.x = -sw * amp;
+    r.armR.rotation.x = 1.4 + st.pitch * 0.8 + sw * 0.04;      // weapon arm aims where the player looks
+    r.armL.rotation.x = 1.25 + st.pitch * 0.8; r.armL.rotation.z = 0.4; r.armR.rotation.z = -0.4;
+    r.head.rotation.x = -st.pitch * 0.6;
+    r.group.scale.y = crouch ? 0.75 : 1;
+  }
+}
+
+function updateCamera(dt) {
+  // Smooth crouch eye-height transition
+  const target = me.crouch ? MOVE.eyeCrouch : MOVE.eyeStand;
+  eyeH += (target - eyeH) * Math.min(1, dt * 14);
+  camera.position.set(me.x, me.y + eyeH, me.z);
+  camera.rotation.set(pitch, yaw, 0);
+  // Slight FOV kick while sprinting
+  const sp = Math.hypot(me.vx, me.vz);
+  fovCur += ((sp > 6.5 ? 80 : 75) - fovCur) * Math.min(1, dt * 6);
+  if (Math.abs(camera.fov - fovCur) > 0.05) { camera.fov = fovCur; camera.updateProjectionMatrix(); }
+  // Sun + shadow follow the player; sky follows the camera
+  sun.position.set(me.x + SUN_OFFSET.x, SUN_OFFSET.y, me.z + SUN_OFFSET.z);
+  sun.target.position.set(me.x, 0, me.z);
+  sky.position.copy(camera.position);
+  sunDisc.position.set(camera.position.x + SUN_OFFSET.x * 5, SUN_OFFSET.y * 5, camera.position.z + SUN_OFFSET.z * 5);
+}
+
+let lastT = performance.now(), fpsN = 0, fpsT = 0, fps = 0;
+function frame() {
+  requestAnimationFrame(frame);
+  const now = performance.now();
+  const dt = Math.min((now - lastT) / 1000, 0.1);
+  lastT = now;
+  fpsN++; fpsT += dt;
+  if (fpsT >= 0.5) { fps = Math.round(fpsN / fpsT); fpsN = 0; fpsT = 0; if (playing) $("debug").textContent = fps + " fps · " + Math.round(ping) + " ms · " + (remotes.size + 1) + " players"; }
+
+  if (playing && map) {
+    acc = Math.min(acc + dt, 0.25);
+    while (acc >= TICK_DT) { acc -= TICK_DT; clientTick(); }   // fixed-step prediction
+    if (now - lastSend >= 50) { flushInput(); lastSend = now; } // send inputs ~20x/second
+    if (now - lastPing > 2000 && ws && ws.readyState === 1) { ws.send(JSON.stringify({ t: "ping", c: now })); lastPing = now; }
+    updateRemotes(now, dt);
+    updateCamera(dt);
+  }
+  renderer.render(scene, camera);
+}
+
+addEventListener("resize", () => {
+  camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ---------------- Menu wiring ----------------
+try {
+  $("name").value = localStorage.getItem("sf_name") || "";
+  $("server").value = localStorage.getItem("sf_server") || "";
+} catch (e) { }
+$("server").placeholder = defaultAddress();
+$("play").addEventListener("click", connect);
+for (const id of ["name", "server"]) $(id).addEventListener("keydown", e => { if (e.key === "Enter") connect(); });
+frame();
+</script>
+</body>
+</html>
